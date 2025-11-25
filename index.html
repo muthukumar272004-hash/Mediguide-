@@ -1,0 +1,713 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  MapPin, Search, Pill, MessageCircle, X, Send, 
+  Camera, Menu, Moon, Sun, ChevronRight, Activity,
+  Info, Clock, ShieldAlert, Phone, Star, Navigation,
+  Upload, Loader, CheckCircle, Filter, ArrowRight
+} from 'lucide-react';
+
+/**
+ * --- CONFIGURATION & MOCK DATA ---
+ */
+
+const MOCK_MEDICINES = [
+  {
+    id: 1,
+    name: 'Paracetamol 500mg',
+    usage: 'Pain, Fever, Cold',
+    dosage: '1-2 tablets every 4-6 hours',
+    precautions: 'Do not exceed daily limit. Consult doctor for liver issues.',
+    description: 'Commonly used mild analgesic and antipyretic.',
+    color: 'bg-blue-100 text-blue-800 border-blue-200'
+  },
+  {
+    id: 2,
+    name: 'Ibuprofen 400mg',
+    usage: 'Inflammation, Pain, Arthritis',
+    dosage: '1 tablet every 6-8 hours with food',
+    precautions: 'Avoid if you have stomach ulcers or asthma.',
+    description: 'Non-steroidal anti-inflammatory drug (NSAID).',
+    color: 'bg-rose-100 text-rose-800 border-rose-200'
+  },
+  {
+    id: 3,
+    name: 'Amoxicillin 500mg',
+    usage: 'Bacterial Infections',
+    dosage: '1 capsule every 8 hours',
+    precautions: 'Complete the full course. Check for penicillin allergy.',
+    description: 'Penicillin antibiotic used to treat various infections.',
+    color: 'bg-amber-100 text-amber-800 border-amber-200'
+  },
+  {
+    id: 4,
+    name: 'Cetirizine 10mg',
+    usage: 'Allergies, Hay Fever',
+    dosage: '1 tablet daily',
+    precautions: 'May cause drowsiness. Avoid alcohol.',
+    description: 'Antihistamine used to relieve allergy symptoms.',
+    color: 'bg-emerald-100 text-emerald-800 border-emerald-200'
+  }
+];
+
+const MOCK_PHARMACIES = [
+  { id: 1, name: 'Laurel Medical', rating: 4.9, dist: '0.3 mi', status: 'Open', type: '24/7', x: 30, y: 40 },
+  { id: 2, name: 'Hillside Pharmacy', rating: 4.4, dist: '0.5 mi', status: 'Closing Soon', type: 'Regular', x: 60, y: 25 },
+  { id: 3, name: 'City Care Chemist', rating: 4.7, dist: '1.2 mi', status: 'Open', type: '24/7', x: 45, y: 70 },
+  { id: 4, name: 'MediPlus Store', rating: 4.2, dist: '0.8 mi', status: 'Closed', type: 'Regular', x: 75, y: 55 },
+  { id: 5, name: 'Green Cross', rating: 4.8, dist: '1.5 mi', status: 'Open', type: 'Regular', x: 20, y: 80 },
+];
+
+/**
+ * --- GEMINI AI SERVICE ---
+ */
+const useGeminiAI = () => {
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // 1. Chat Functionality
+  const askMediBoy = async (history, userMessage) => {
+    setIsProcessing(true);
+    try {
+      // Construct conversation history for the prompt
+      const conversationContext = history.map(msg => 
+        `${msg.role === 'user' ? 'User' : 'MediBoy'}: ${msg.text}`
+      ).join('\n');
+
+      const prompt = `
+        You are MediBoy, an advanced AI medical assistant for MediGuide+.
+        
+        CONTEXT:
+        ${conversationContext}
+        User: ${userMessage}
+        
+        INSTRUCTIONS:
+        1. Provide empathetic, accurate medical information.
+        2. If the user mentions symptoms, suggest potential OTC remedies but ALWAYS advise consulting a doctor.
+        3. Keep responses concise (max 3-4 sentences) unless asked for details.
+        4. Format properly using standard text.
+      `;
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=`, 
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }]
+          })
+        }
+      );
+
+      const data = await response.json();
+      setIsProcessing(false);
+      return data?.candidates?.[0]?.content?.parts?.[0]?.text || "I'm having trouble connecting. Please try again.";
+    } catch (error) {
+      console.error("Chat Error:", error);
+      setIsProcessing(false);
+      return "Connection error. Please check your internet.";
+    }
+  };
+
+  // 2. Vision Functionality (Pill Identifier)
+  const identifyPill = async (base64Image) => {
+    setIsProcessing(true);
+    try {
+      const prompt = `
+        Analyze this image of a medicine/pill/packaging.
+        Return a JSON object (and ONLY the JSON object) with these fields:
+        {
+          "name": "Name of medicine",
+          "usage": "Common uses",
+          "dosage": "Typical dosage (general)",
+          "precautions": "Key warnings",
+          "confidence": "High/Medium/Low"
+        }
+        If it's not a medicine, return {"error": "Not a recognized medicine"}.
+      `;
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: prompt },
+                { inlineData: { mimeType: "image/jpeg", data: base64Image } }
+              ]
+            }]
+          })
+        }
+      );
+
+      const data = await response.json();
+      const textResponse = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      // Clean the response to ensure valid JSON
+      const jsonString = textResponse.replace(/```json|```/g, '').trim();
+      setIsProcessing(false);
+      return JSON.parse(jsonString);
+
+    } catch (error) {
+      console.error("Vision Error:", error);
+      setIsProcessing(false);
+      return { error: "Failed to analyze image." };
+    }
+  };
+
+  return { askMediBoy, identifyPill, isProcessing };
+};
+
+/**
+ * --- MAIN APPLICATION COMPONENT ---
+ */
+export default function MediGuidePro() {
+  // State
+  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard, map, scan, encyclopedia
+  const [darkMode, setDarkMode] = useState(false);
+  const [showChat, setShowChat] = useState(false);
+  
+  // Chat State
+  const [messages, setMessages] = useState([{ role: 'assistant', text: "Hello! I'm MediBoy. How can I help you today?" }]);
+  const [chatInput, setChatInput] = useState('');
+  
+  // Scanner State
+  const [scanImage, setScanImage] = useState(null);
+  const [scanResult, setScanResult] = useState(null);
+  
+  // Map State
+  const [mapFilter, setMapFilter] = useState('all'); // all, open, 24/7
+  const [selectedPharmacy, setSelectedPharmacy] = useState(null);
+
+  // Hooks
+  const { askMediBoy, identifyPill, isProcessing } = useGeminiAI();
+  const chatEndRef = useRef(null);
+
+  // --- HANDLERS ---
+
+  // Chat Handler
+  const handleSendMessage = async () => {
+    if (!chatInput.trim()) return;
+    const newMsg = { role: 'user', text: chatInput };
+    setMessages(prev => [...prev, newMsg]);
+    setChatInput('');
+    
+    const response = await askMediBoy(messages, newMsg.text);
+    setMessages(prev => [...prev, { role: 'assistant', text: response }]);
+  };
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, showChat]);
+
+  // Image Upload Handler
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        // Extract base64 data
+        const base64String = reader.result.split(',')[1];
+        setScanImage(reader.result);
+        handleAnalyzePill(base64String);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleAnalyzePill = async (base64) => {
+    setScanResult(null);
+    const result = await identifyPill(base64);
+    setScanResult(result);
+  };
+
+  const toggleTheme = () => setDarkMode(!darkMode);
+
+  // --- SUB-COMPONENTS ---
+
+  const SidebarItem = ({ id, icon: Icon, label }) => (
+    <button 
+      onClick={() => setActiveTab(id)}
+      className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 font-medium
+        ${activeTab === id 
+          ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30 translate-x-1' 
+          : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600'
+        }`}
+    >
+      <Icon size={20} />
+      <span>{label}</span>
+    </button>
+  );
+
+  // --- VIEWS ---
+
+  const DashboardView = () => (
+    <div className="space-y-6 animate-in fade-in duration-500">
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-white">Welcome back, User</h2>
+          <p className="text-slate-500 dark:text-slate-400">Here is your health overview today.</p>
+        </div>
+        <div className="hidden md:flex gap-3">
+             <div className="px-4 py-2 bg-red-50 dark:bg-red-900/20 text-red-600 rounded-lg text-sm font-bold flex items-center gap-2">
+                <Activity size={16}/> High Pollen Count
+             </div>
+             <div className="px-4 py-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-lg text-sm font-bold flex items-center gap-2">
+                <CheckCircle size={16}/> Meds Taken
+             </div>
+        </div>
+      </div>
+
+      {/* Quick Actions Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div 
+            onClick={() => setActiveTab('scan')}
+            className="cursor-pointer group p-6 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl text-white shadow-xl shadow-blue-500/20 transition-transform hover:-translate-y-1"
+        >
+            <div className="bg-white/20 w-12 h-12 rounded-xl flex items-center justify-center mb-4 backdrop-blur-sm">
+                <Camera className="text-white" />
+            </div>
+            <h3 className="text-xl font-bold mb-1">Identify Pill</h3>
+            <p className="text-blue-100 text-sm mb-4">Scan medicines to get instant AI details.</p>
+            <div className="flex items-center gap-2 text-sm font-bold bg-white/10 w-fit px-3 py-1 rounded-lg">
+                Try Now <ArrowRight size={14} />
+            </div>
+        </div>
+
+        <div 
+            onClick={() => setActiveTab('map')}
+            className="cursor-pointer group p-6 bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-2xl shadow-sm hover:shadow-md transition-all"
+        >
+             <div className="bg-orange-100 dark:bg-orange-900/30 w-12 h-12 rounded-xl flex items-center justify-center mb-4 text-orange-600">
+                <MapPin />
+            </div>
+            <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-1">Find Pharmacy</h3>
+            <p className="text-slate-500 dark:text-slate-400 text-sm">Locate nearest 24/7 stores with stock.</p>
+        </div>
+
+        <div 
+            onClick={() => setShowChat(true)}
+            className="cursor-pointer group p-6 bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-2xl shadow-sm hover:shadow-md transition-all"
+        >
+             <div className="bg-emerald-100 dark:bg-emerald-900/30 w-12 h-12 rounded-xl flex items-center justify-center mb-4 text-emerald-600">
+                <MessageCircle />
+            </div>
+            <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-1">Ask MediBoy</h3>
+            <p className="text-slate-500 dark:text-slate-400 text-sm">Chat with our smart AI assistant.</p>
+        </div>
+      </div>
+
+      {/* Recent Activity / Suggestions */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm">
+            <h3 className="font-bold text-lg mb-4 text-slate-900 dark:text-white">Common Seasonal Ailments</h3>
+            <div className="space-y-3">
+                {['Seasonal Flu', 'Hay Fever', 'Common Cold'].map((item, i) => (
+                    <div key={i} className="flex items-center justify-between p-3 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-xl transition cursor-pointer">
+                        <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold">{i+1}</div>
+                            <span className="font-medium text-slate-700 dark:text-slate-200">{item}</span>
+                        </div>
+                        <ChevronRight size={16} className="text-slate-400"/>
+                    </div>
+                ))}
+            </div>
+        </div>
+        
+        {/* Mini Map Preview */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm relative overflow-hidden">
+            <h3 className="font-bold text-lg mb-4 text-slate-900 dark:text-white z-10 relative">Nearest Pharmacy</h3>
+            <div className="absolute top-0 right-0 w-full h-full opacity-10 pointer-events-none bg-[radial-gradient(#4f46e5_1px,transparent_1px)] [background-size:16px_16px]"></div>
+            <div className="flex items-center gap-4 mt-4">
+                <div className="w-16 h-16 bg-slate-200 dark:bg-slate-700 rounded-full flex items-center justify-center flex-shrink-0">
+                    <MapPin className="text-red-500 animate-bounce" />
+                </div>
+                <div>
+                    <h4 className="font-bold text-slate-900 dark:text-white">Laurel Medical</h4>
+                    <p className="text-slate-500 text-sm">0.3 miles away • Open now</p>
+                </div>
+                <button onClick={() => setActiveTab('map')} className="ml-auto bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-4 py-2 rounded-lg text-sm font-bold">
+                    View
+                </button>
+            </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const ScanView = () => (
+    <div className="h-full flex flex-col animate-in slide-in-from-right duration-300">
+      <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">AI Pill Identifier</h2>
+      <p className="text-slate-500 dark:text-slate-400 mb-6">Upload a clear image of the pill or packaging to get detailed information.</p>
+      
+      <div className="flex-1 flex flex-col lg:flex-row gap-6 overflow-hidden">
+        {/* Upload Area */}
+        <div className="lg:w-1/2 flex flex-col">
+            <label className={`
+                flex-1 border-2 border-dashed rounded-3xl flex flex-col items-center justify-center cursor-pointer transition-all relative overflow-hidden group
+                ${scanImage ? 'border-blue-500 bg-slate-50 dark:bg-slate-900' : 'border-slate-300 dark:border-slate-600 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-slate-800'}
+            `}>
+                <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                
+                {scanImage ? (
+                    <img src={scanImage} alt="Uploaded" className="w-full h-full object-contain p-4" />
+                ) : (
+                    <div className="text-center p-6">
+                        <div className="w-20 h-20 bg-blue-100 dark:bg-blue-900/30 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
+                            <Upload size={32} />
+                        </div>
+                        <h3 className="text-lg font-bold text-slate-700 dark:text-slate-200">Click to Upload Image</h3>
+                        <p className="text-slate-400 text-sm mt-2">Supports JPG, PNG</p>
+                    </div>
+                )}
+
+                {/* Loading Overlay */}
+                {isProcessing && (
+                    <div className="absolute inset-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center z-10">
+                        <Loader className="w-12 h-12 text-blue-600 animate-spin mb-4" />
+                        <p className="font-bold text-slate-700 dark:text-slate-200 animate-pulse">Analyzing with Gemini AI...</p>
+                    </div>
+                )}
+            </label>
+        </div>
+
+        {/* Result Area */}
+        <div className="lg:w-1/2 bg-white dark:bg-slate-800 rounded-3xl p-6 border border-slate-100 dark:border-slate-700 shadow-sm overflow-y-auto">
+            {!scanResult && !isProcessing && !scanImage && (
+                <div className="h-full flex flex-col items-center justify-center text-center text-slate-400">
+                    <Info size={48} className="mb-4 opacity-50" />
+                    <p>Results will appear here after analysis.</p>
+                </div>
+            )}
+
+            {scanResult && (
+                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    {scanResult.error ? (
+                        <div className="p-4 bg-red-50 text-red-600 rounded-xl flex items-center gap-3">
+                            <ShieldAlert />
+                            {scanResult.error}
+                        </div>
+                    ) : (
+                        <>
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <span className="text-xs font-bold text-blue-600 uppercase tracking-wider">Detected Medicine</span>
+                                    <h2 className="text-3xl font-extrabold text-slate-900 dark:text-white mt-1">{scanResult.name}</h2>
+                                </div>
+                                <div className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold">
+                                    High Confidence
+                                </div>
+                            </div>
+
+                            <div className="grid gap-4">
+                                <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
+                                    <h4 className="flex items-center gap-2 font-bold text-blue-800 dark:text-blue-300 mb-2">
+                                        <Activity size={18}/> Common Usage
+                                    </h4>
+                                    <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{scanResult.usage}</p>
+                                </div>
+
+                                <div className="p-4 bg-orange-50 dark:bg-orange-900/20 rounded-xl">
+                                    <h4 className="flex items-center gap-2 font-bold text-orange-800 dark:text-orange-300 mb-2">
+                                        <Clock size={18}/> Dosage
+                                    </h4>
+                                    <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{scanResult.dosage}</p>
+                                </div>
+
+                                <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-100 dark:border-red-900/30">
+                                    <h4 className="flex items-center gap-2 font-bold text-red-800 dark:text-red-300 mb-2">
+                                        <ShieldAlert size={18}/> Precautions
+                                    </h4>
+                                    <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{scanResult.precautions}</p>
+                                </div>
+                            </div>
+                            
+                            <button 
+                                onClick={() => setActiveTab('map')}
+                                className="w-full py-3 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-xl font-bold hover:opacity-90 transition-opacity mt-4"
+                            >
+                                Find this medicine nearby
+                            </button>
+                        </>
+                    )}
+                </div>
+            )}
+        </div>
+      </div>
+    </div>
+  );
+
+  const MapView = () => {
+    const filteredPharmacies = MOCK_PHARMACIES.filter(p => {
+        if (mapFilter === 'all') return true;
+        if (mapFilter === 'open') return p.status === 'Open' || p.type === '24/7';
+        if (mapFilter === '24/7') return p.type === '24/7';
+        return true;
+    });
+
+    return (
+        <div className="h-full flex flex-col lg:flex-row overflow-hidden rounded-3xl border border-slate-200 dark:border-slate-700 relative">
+            {/* Sidebar List */}
+            <div className="w-full lg:w-80 bg-white dark:bg-slate-800 flex flex-col border-r dark:border-slate-700 z-10">
+                <div className="p-4 border-b dark:border-slate-700">
+                    <h3 className="font-bold text-lg mb-2">Nearby Pharmacies</h3>
+                    <div className="flex gap-2">
+                        <button onClick={() => setMapFilter('all')} className={`px-3 py-1 rounded-full text-xs font-bold transition ${mapFilter === 'all' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-500'}`}>All</button>
+                        <button onClick={() => setMapFilter('open')} className={`px-3 py-1 rounded-full text-xs font-bold transition ${mapFilter === 'open' ? 'bg-green-600 text-white' : 'bg-slate-100 text-slate-500'}`}>Open Now</button>
+                        <button onClick={() => setMapFilter('24/7')} className={`px-3 py-1 rounded-full text-xs font-bold transition ${mapFilter === '24/7' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}>24/7</button>
+                    </div>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                    {filteredPharmacies.map(pharmacy => (
+                        <div 
+                            key={pharmacy.id} 
+                            onClick={() => setSelectedPharmacy(pharmacy)}
+                            className={`p-4 border-b dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 transition ${selectedPharmacy?.id === pharmacy.id ? 'bg-blue-50 dark:bg-blue-900/20 border-l-4 border-l-blue-600' : ''}`}
+                        >
+                            <h4 className="font-bold text-sm">{pharmacy.name}</h4>
+                            <div className="flex items-center gap-1 text-xs text-slate-500 mt-1">
+                                <Star size={12} className="text-yellow-500" fill="currentColor"/> {pharmacy.rating} • {pharmacy.dist}
+                            </div>
+                            <div className={`text-xs font-bold mt-2 ${pharmacy.status === 'Open' ? 'text-green-600' : pharmacy.status === 'Closed' ? 'text-red-500' : 'text-orange-500'}`}>
+                                {pharmacy.status} {pharmacy.type === '24/7' && <span className="text-blue-500">• 24/7</span>}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Visual Map Simulation */}
+            <div className="flex-1 bg-slate-100 dark:bg-slate-900 relative overflow-hidden group">
+                {/* Map Background Pattern */}
+                <div className="absolute inset-0 opacity-10 dark:opacity-5 pointer-events-none"
+                    style={{backgroundImage: 'radial-gradient(circle, #64748b 1px, transparent 1px)', backgroundSize: '20px 20px'}}>
+                </div>
+                
+                {/* Road Network SVG */}
+                <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-20">
+                    <path d="M-100 100 Q 400 300 600 100 T 1400 500" fill="none" stroke="currentColor" strokeWidth="30" className="text-slate-300 dark:text-slate-600"/>
+                    <path d="M300 -100 Q 400 400 200 800" fill="none" stroke="currentColor" strokeWidth="25" className="text-slate-300 dark:text-slate-600"/>
+                    <path d="M800 0 L 800 1000" fill="none" stroke="currentColor" strokeWidth="20" className="text-slate-300 dark:text-slate-600"/>
+                </svg>
+
+                {/* Pins */}
+                {filteredPharmacies.map(p => (
+                    <button
+                        key={p.id}
+                        onClick={() => setSelectedPharmacy(p)}
+                        className="absolute transform -translate-x-1/2 -translate-y-full transition-all duration-300 hover:scale-110 focus:outline-none z-20"
+                        style={{ left: `${p.x}%`, top: `${p.y}%` }}
+                    >
+                        <div className={`relative p-2 rounded-full shadow-xl transition-colors ${selectedPharmacy?.id === p.id ? 'bg-blue-600 scale-125 z-30' : 'bg-white dark:bg-slate-800'}`}>
+                            <MapPin size={24} className={selectedPharmacy?.id === p.id ? 'text-white' : 'text-red-500'} fill="currentColor"/>
+                        </div>
+                    </button>
+                ))}
+
+                {/* User Location */}
+                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10">
+                     <div className="w-4 h-4 bg-blue-500 rounded-full ring-4 ring-white shadow-xl animate-pulse"></div>
+                     <div className="absolute -inset-8 bg-blue-500/20 rounded-full animate-ping"></div>
+                </div>
+
+                {/* Map Controls */}
+                <div className="absolute bottom-6 right-6 flex flex-col gap-2">
+                    <button className="bg-white dark:bg-slate-800 p-3 rounded-xl shadow-lg hover:bg-slate-50"><Navigation size={20}/></button>
+                </div>
+                
+                {/* Selected Info Overlay */}
+                {selectedPharmacy && (
+                    <div className="absolute bottom-6 left-6 right-16 bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-700 animate-in slide-in-from-bottom-10">
+                        <div className="flex justify-between items-start">
+                            <div>
+                                <h3 className="font-bold text-lg">{selectedPharmacy.name}</h3>
+                                <p className="text-sm text-slate-500">{selectedPharmacy.dist} away • {selectedPharmacy.status}</p>
+                            </div>
+                            <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg shadow-blue-500/30">
+                                Navigate
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+  };
+
+  const EncyclopediaView = () => (
+      <div className="h-full overflow-y-auto pr-2">
+          <div className="max-w-3xl mx-auto space-y-6">
+             <div className="text-center mb-8">
+                 <h2 className="text-2xl font-bold mb-2">Medicine Encyclopedia</h2>
+                 <div className="relative">
+                    <Search className="absolute left-4 top-3.5 text-slate-400" size={20}/>
+                    <input type="text" placeholder="Search e.g., Amoxicillin" className="w-full pl-12 pr-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-900 border-transparent focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-all outline-none" />
+                 </div>
+             </div>
+             
+             <div className="grid gap-4">
+                {MOCK_MEDICINES.map(med => (
+                    <div key={med.id} className={`group bg-white dark:bg-slate-800 rounded-2xl border-l-4 ${med.color} shadow-sm hover:shadow-md transition-all overflow-hidden`}>
+                        <div className="p-5">
+                            <div className="flex justify-between items-start mb-2">
+                                <h3 className="font-bold text-xl text-slate-900 dark:text-white group-hover:text-blue-600 transition-colors">{med.name}</h3>
+                                <span className="text-xs font-bold px-2 py-1 rounded bg-slate-100 dark:bg-slate-700 text-slate-500">FDA Approved</span>
+                            </div>
+                            <p className="text-slate-500 mb-4">{med.description}</p>
+                            
+                            <div className="grid md:grid-cols-3 gap-4 text-sm">
+                                <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg">
+                                    <span className="block text-xs font-bold text-slate-400 uppercase mb-1">Usage</span>
+                                    {med.usage}
+                                </div>
+                                <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg">
+                                    <span className="block text-xs font-bold text-slate-400 uppercase mb-1">Dosage</span>
+                                    {med.dosage}
+                                </div>
+                                <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg">
+                                    <span className="block text-xs font-bold text-slate-400 uppercase mb-1">Caution</span>
+                                    <span className="text-red-500">{med.precautions}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                ))}
+             </div>
+          </div>
+      </div>
+  );
+
+  return (
+    <div className={`flex h-screen w-full overflow-hidden transition-colors duration-300 ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
+      
+      {/* Sidebar */}
+      <aside className="hidden md:flex w-72 flex-col bg-white dark:bg-slate-900 border-r dark:border-slate-800 z-20">
+        <div className="p-6 flex items-center gap-3 text-blue-600">
+            <div className="bg-blue-600 text-white p-2 rounded-xl shadow-lg shadow-blue-600/20">
+                <Pill size={24} />
+            </div>
+            <span className="text-xl font-extrabold tracking-tight text-slate-900 dark:text-white">MediGuide+</span>
+        </div>
+
+        <nav className="flex-1 px-4 space-y-2 mt-4">
+            <SidebarItem id="dashboard" icon={Activity} label="Dashboard" />
+            <SidebarItem id="scan" icon={Camera} label="AI Scanner" />
+            <SidebarItem id="map" icon={MapPin} label="Pharmacy Map" />
+            <SidebarItem id="encyclopedia" icon={Search} label="Encyclopedia" />
+        </nav>
+
+        <div className="p-4">
+             <div className="bg-gradient-to-br from-indigo-600 to-blue-600 rounded-2xl p-4 text-white shadow-xl relative overflow-hidden group cursor-pointer" onClick={() => setShowChat(true)}>
+                <div className="absolute -right-4 -top-4 w-24 h-24 bg-white/10 rounded-full group-hover:scale-150 transition-transform duration-500"></div>
+                <h4 className="font-bold relative z-10">Need Help?</h4>
+                <p className="text-blue-100 text-sm mb-3 relative z-10">Chat with MediBoy AI</p>
+                <button className="w-full bg-white text-blue-600 py-2 rounded-lg text-sm font-bold shadow-sm relative z-10">Start Chat</button>
+             </div>
+             <button onClick={toggleTheme} className="w-full mt-4 flex items-center justify-center gap-2 py-2 text-slate-400 hover:text-slate-600 text-sm font-medium">
+                {darkMode ? <><Sun size={16}/> Light Mode</> : <><Moon size={16}/> Dark Mode</>}
+             </button>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 flex flex-col h-full relative">
+        {/* Mobile Header */}
+        <div className="md:hidden flex items-center justify-between p-4 bg-white dark:bg-slate-900 border-b dark:border-slate-800">
+             <div className="flex items-center gap-2">
+                <Pill className="text-blue-600" />
+                <span className="font-bold">MediGuide+</span>
+             </div>
+             <button onClick={() => setActiveTab('dashboard')}><Menu/></button>
+        </div>
+
+        <div className="flex-1 p-4 md:p-8 overflow-hidden">
+            {activeTab === 'dashboard' && <DashboardView />}
+            {activeTab === 'scan' && <ScanView />}
+            {activeTab === 'map' && <MapView />}
+            {activeTab === 'encyclopedia' && <EncyclopediaView />}
+        </div>
+
+        {/* GLOBAL CHAT WIDGET */}
+        <div className={`fixed bottom-0 right-0 md:bottom-6 md:right-6 z-50 transition-all duration-300 flex flex-col items-end pointer-events-none ${showChat ? 'w-full md:w-[400px]' : 'w-auto'}`}>
+            
+            {/* Chat Box */}
+            <div className={`pointer-events-auto bg-white dark:bg-slate-900 shadow-2xl rounded-t-2xl md:rounded-2xl border border-slate-100 dark:border-slate-700 overflow-hidden flex flex-col transition-all duration-300 origin-bottom-right
+                ${showChat ? 'translate-y-0 opacity-100 h-[600px] md:h-[550px] w-full' : 'translate-y-10 opacity-0 h-0 w-0 scale-95'}`}
+            >
+                 {/* Header */}
+                 <div className="bg-blue-600 p-4 flex justify-between items-center text-white">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-sm border border-white/30">
+                            <MessageCircle size={20} />
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-sm">MediBoy AI</h3>
+                            <p className="text-xs text-blue-100 opacity-80">Always here to help</p>
+                        </div>
+                    </div>
+                    <button onClick={() => setShowChat(false)} className="p-1 hover:bg-white/20 rounded-lg transition"><X size={20}/></button>
+                 </div>
+
+                 {/* Messages */}
+                 <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50 dark:bg-slate-950/50">
+                    {messages.map((m, i) => (
+                        <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                            <div className={`max-w-[85%] p-3 rounded-2xl text-sm leading-relaxed shadow-sm ${
+                                m.role === 'user' 
+                                ? 'bg-blue-600 text-white rounded-tr-none' 
+                                : 'bg-white dark:bg-slate-800 dark:text-slate-200 rounded-tl-none border border-slate-100 dark:border-slate-700'
+                            }`}>
+                                {m.text}
+                            </div>
+                        </div>
+                    ))}
+                    {isProcessing && (
+                        <div className="flex justify-start">
+                            <div className="bg-white dark:bg-slate-800 p-3 rounded-2xl rounded-tl-none border border-slate-100 dark:border-slate-700 flex gap-1">
+                                <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></span>
+                                <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-75"></span>
+                                <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-150"></span>
+                            </div>
+                        </div>
+                    )}
+                    <div ref={chatEndRef} />
+                 </div>
+
+                 {/* Input */}
+                 <div className="p-3 bg-white dark:bg-slate-900 border-t dark:border-slate-800">
+                    <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 p-2 rounded-full">
+                        <input 
+                            type="text" 
+                            value={chatInput}
+                            onChange={e => setChatInput(e.target.value)}
+                            onKeyPress={e => e.key === 'Enter' && handleSendMessage()}
+                            placeholder="Type your health question..."
+                            className="flex-1 bg-transparent px-3 py-1 outline-none text-sm dark:text-white"
+                        />
+                        <button 
+                            onClick={handleSendMessage}
+                            disabled={!chatInput.trim() || isProcessing}
+                            className="bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700 disabled:opacity-50 transition"
+                        >
+                            <Send size={16} />
+                        </button>
+                    </div>
+                 </div>
+            </div>
+
+            {/* Toggle Button */}
+            {!showChat && (
+                <button 
+                    onClick={() => setShowChat(true)}
+                    className="pointer-events-auto bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-full shadow-2xl shadow-blue-600/40 transition-transform hover:scale-105 active:scale-95 flex items-center gap-2 group"
+                >
+                    <MessageCircle size={24} />
+                    <span className="max-w-0 overflow-hidden group-hover:max-w-xs transition-all duration-300 font-bold whitespace-nowrap">Chat with MediBoy</span>
+                </button>
+            )}
+        </div>
+
+      </main>
+    </div>
+  );
+}
